@@ -1,0 +1,51 @@
+# Образ traefik с JA4 для стенда emperor (см. emperor/Dockerfile).
+# Только на ветках emperor/*: upstream-воркфлоу этого форка не трогаем.
+#
+# При переносе патча на новый тег traefik: ветка emperor/<тег>-ja4 и
+# TRAEFIK_VERSION ниже. Тег образа — ghcr.io/mixailo/traefik:<тег>-ja4.
+name: emperor-image
+on:
+  push:
+    branches: ['emperor/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  TRAEFIK_VERSION: v3.6.6
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+      # Пакеты, которые трогает патч JA4.
+      - run: go test ./pkg/tls/ ./pkg/server/ ./pkg/server/router/tcp/ ./pkg/middlewares/accesslog/
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: emperor/Dockerfile
+          build-args: TRAEFIK_VERSION=${{ env.TRAEFIK_VERSION }}
+          push: true
+          tags: |
+            ghcr.io/mixailo/traefik:${{ env.TRAEFIK_VERSION }}-ja4
+            ghcr.io/mixailo/traefik:${{ env.TRAEFIK_VERSION }}-ja4-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/mixailo/traefik
+            org.opencontainers.image.version=${{ env.TRAEFIK_VERSION }}-ja4
