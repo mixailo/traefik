@@ -35,6 +35,7 @@ import (
 	tcprouter "github.com/traefik/traefik/v3/pkg/server/router/tcp"
 	"github.com/traefik/traefik/v3/pkg/server/service/kerberos"
 	"github.com/traefik/traefik/v3/pkg/tcp"
+	traefiktls "github.com/traefik/traefik/v3/pkg/tls"
 	"github.com/traefik/traefik/v3/pkg/types"
 )
 
@@ -747,6 +748,7 @@ func newHTTPServer(ctx context.Context, ln net.Listener, configuration *static.E
 
 		return ctx
 	})
+	connContext.AddConnContextFunc(contextWithJA4)
 
 	if debugConnection || (configuration.Transport != nil && (configuration.Transport.KeepAliveMaxTime > 0 || configuration.Transport.KeepAliveMaxRequests > 0)) {
 		connContext.AddConnContextFunc(func(ctx context.Context, c net.Conn) context.Context {
@@ -801,6 +803,26 @@ func newHTTPServer(ctx context.Context, ln net.Listener, configuration *static.E
 		Forwarder: listener,
 		Switcher:  httpSwitcher,
 	}, nil
+}
+
+// contextWithJA4 stores in ctx the JA4 fingerprint computed by the TCP router from the ClientHello of conn, if any.
+func contextWithJA4(ctx context.Context, conn net.Conn) context.Context {
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return ctx
+	}
+
+	netConn := tlsConn.NetConn()
+	if tlsConnWithOptionsName, ok := netConn.(tcp.TLSConn); ok {
+		netConn = tlsConnWithOptionsName.WriteCloser
+	}
+
+	fingerprinted, ok := netConn.(interface{ JA4() string })
+	if !ok || fingerprinted.JA4() == "" {
+		return ctx
+	}
+
+	return traefiktls.ContextWithJA4(ctx, fingerprinted.JA4())
 }
 
 func getConnKey(conn net.Conn) string {

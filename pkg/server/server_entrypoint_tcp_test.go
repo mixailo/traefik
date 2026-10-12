@@ -23,6 +23,7 @@ import (
 	"github.com/traefik/traefik/v3/pkg/middlewares/requestdecorator"
 	tcprouter "github.com/traefik/traefik/v3/pkg/server/router/tcp"
 	"github.com/traefik/traefik/v3/pkg/tcp"
+	traefiktls "github.com/traefik/traefik/v3/pkg/tls"
 	"github.com/traefik/traefik/v3/pkg/tls/generate"
 	"golang.org/x/net/http2"
 )
@@ -1593,4 +1594,157 @@ func TestHTTP2RequestTLS(t *testing.T) {
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 	}
+}
+
+func TestJA4OnRequestContext(t *testing.T) {
+	testCases := []struct {
+		desc          string
+		http2         bool
+		expectedProto string
+		expectedALPN  string
+	}{
+		{
+			desc:          "HTTP/1.1 without ALPN",
+			expectedProto: "HTTP/1.1",
+			expectedALPN:  "00",
+		},
+		{
+			desc:          "HTTP/2",
+			http2:         true,
+			expectedProto: "HTTP/2.0",
+			expectedALPN:  "h2",
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.desc, func(t *testing.T) {
+			epConfig := &static.EntryPointsTransport{}
+			epConfig.SetDefaults()
+
+			entryPoint, err := NewTCPEntryPoint(t.Context(), "", &static.EntryPoint{
+				Address:          "127.0.0.1:0",
+				Transport:        epConfig,
+				ForwardedHeaders: &static.ForwardedHeaders{},
+				HTTP2:            &static.HTTP2Config{},
+			}, nil, nil)
+			require.NoError(t, err)
+
+			cert, err := generate.DefaultCertificate()
+			require.NoError(t, err)
+
+			// The fingerprint of the ClientHello received by the TLS handshake, to compare with the one on the request context.
+			handshakeJA4 := make(chan string, 1)
+			tlsConfig := &tls.Config{
+				Certificates: []tls.Certificate{*cert},
+				NextProtos:   []string{"h2", "http/1.1"},
+			}
+			tlsConfig.GetConfigForClient = func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+				handshakeJA4 <- traefiktls.JA4(info)
+				return nil, nil
+			}
+
+			router, err := tcprouter.NewRouter(nil)
+			require.NoError(t, err)
+
+			router.SetHTTPSHandler(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+				rw.Header().Set("X-Proto", req.Proto)
+				_, _ = rw.Write([]byte(traefiktls.JA4FromContext(req.Context())))
+			}), tlsConfig)
+
+			conn, err := startEntrypoint(t, entryPoint, router)
+			require.NoError(t, err)
+			require.NoError(t, conn.Close())
+
+			var protocols http.Protocols
+			protocols.SetHTTP1(!test.http2)
+			protocols.SetHTTP2(test.http2)
+			client := &http.Client{
+				Transport: &http.Transport{
+					Protocols: &protocols,
+					TLSClientConfig: &tls.Config{
+						ServerName:         "example.com",
+						InsecureSkipVerify: true,
+					},
+				},
+			}
+
+			resp, err := client.Get("https://" + entryPoint.listener.Addr().String())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = resp.Body.Close() })
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			assert.Equal(t, test.expectedProto, resp.Header.Get("X-Proto"))
+			assert.Regexp(t, `^t13d\d{4}`+test.expectedALPN+`_[0-9a-f]{12}_[0-9a-f]{12}$`, string(body))
+			assert.Equal(t, <-handshakeJA4, string(body))
+		})
+	}
+}
+
+func TestContextWithJA4(t *testing.T) {
+	const ja4 = "t13d1516h2_8daaf6152771_e5627efa2ab1"
+
+	testCases := []struct {
+		desc     string
+		conn     func(net.Conn) net.Conn
+		expected string
+	}{
+		{
+			desc:     "not a TLS connection",
+			conn:     func(conn net.Conn) net.Conn { return conn },
+			expected: "",
+		},
+		{
+			desc: "TLS connection not handled by the TCP router",
+			conn: func(conn net.Conn) net.Conn {
+				return tls.Server(conn, &tls.Config{})
+			},
+			expected: "",
+		},
+		{
+			desc: "TLS connection without fingerprint",
+			conn: func(conn net.Conn) net.Conn {
+				return tls.Server(tcp.TLSConn{WriteCloser: &fingerprintedConn{WriteCloser: conn.(tcp.WriteCloser)}}, &tls.Config{})
+			},
+			expected: "",
+		},
+		{
+			desc: "TLS connection with fingerprint",
+			conn: func(conn net.Conn) net.Conn {
+				return tls.Server(tcp.TLSConn{WriteCloser: &fingerprintedConn{WriteCloser: conn.(tcp.WriteCloser), ja4: ja4}}, &tls.Config{})
+			},
+			expected: ja4,
+		},
+		{
+			desc: "TLS connection with fingerprint without TLS options name",
+			conn: func(conn net.Conn) net.Conn {
+				return tls.Server(&fingerprintedConn{WriteCloser: conn.(tcp.WriteCloser), ja4: ja4}, &tls.Config{})
+			},
+			expected: ja4,
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.desc, func(t *testing.T) {
+			t.Parallel()
+
+			conn := &net.TCPConn{}
+
+			ctx := contextWithJA4(t.Context(), test.conn(conn))
+
+			assert.Equal(t, test.expected, traefiktls.JA4FromContext(ctx))
+		})
+	}
+}
+
+// fingerprintedConn is a connection carrying a JA4 fingerprint, as the ones handed over by the TCP router.
+type fingerprintedConn struct {
+	tcp.WriteCloser
+
+	ja4 string
+}
+
+func (c *fingerprintedConn) JA4() string {
+	return c.ja4
 }

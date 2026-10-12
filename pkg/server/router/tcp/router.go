@@ -164,6 +164,8 @@ func (r *Router) ServeTCP(conn tcp.WriteCloser) {
 		return
 	}
 
+	pConn.ja4 = hello.ja4
+
 	// The deadline was set to avoid blocking on the initial read of the ClientHello,
 	// but now that we have it, we can remove it,
 	// and delegate this to underlying TCP server (for now only handled by HTTP Server).
@@ -363,6 +365,9 @@ type peekConn struct {
 
 	peeked []byte
 	reader *bufio.Reader
+
+	// ja4 is the JA4 fingerprint of the TLS ClientHello peeked from the connection, if any.
+	ja4 string
 }
 
 func newPeekConn(conn tcp.WriteCloser) *peekConn {
@@ -387,6 +392,12 @@ func (c *peekConn) PeekRead(p []byte) (int, error) {
 	return n, err
 }
 
+// JA4 returns the JA4 fingerprint of the TLS ClientHello peeked from the connection,
+// or an empty string if the connection is not TLS.
+func (c *peekConn) JA4() string {
+	return c.ja4
+}
+
 // Read drains accumulated peeked bytes first, then reads from the bufio reader.
 func (c *peekConn) Read(p []byte) (int, error) {
 	if len(c.peeked) > 0 {
@@ -405,6 +416,7 @@ type clientHello struct {
 	serverName string   // SNI server name
 	protos     []string // ALPN protocols list
 	isTLS      bool     // whether we are a TLS handshake
+	ja4        string   // JA4 fingerprint of the hello
 }
 
 // clientHelloInfo returns various data from the clientHello handshake,
@@ -434,11 +446,13 @@ func clientHelloInfo(conn *peekConn) (*clientHello, error) {
 	var (
 		sni    string
 		protos []string
+		ja4    string
 	)
 	server := tls.Server(readOnlyConn{conn: conn}, &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			sni = hello.ServerName
 			protos = hello.SupportedProtos
+			ja4 = traefiktls.JA4(hello)
 			// This error prevents unnecessary additional steps in the TLS ClientHello message processing.
 			return nil, errClientHelloRead
 		},
@@ -452,6 +466,7 @@ func clientHelloInfo(conn *peekConn) (*clientHello, error) {
 		serverName: sni,
 		isTLS:      true,
 		protos:     protos,
+		ja4:        ja4,
 	}, nil
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/traefik/traefik/v3/pkg/middlewares/capture"
 	"github.com/traefik/traefik/v3/pkg/middlewares/observability"
 	otypes "github.com/traefik/traefik/v3/pkg/observability/types"
+	traefiktls "github.com/traefik/traefik/v3/pkg/tls"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -56,6 +57,7 @@ var (
 	testMethod                    = http.MethodPost
 	testReferer                   = "testReferer"
 	testUserAgent                 = "testUserAgent"
+	testJA4                       = "t13d1516h2_8daaf6152771_e5627efa2ab1"
 	testRetryAttempts             = 2
 	testStart                     = time.Now()
 )
@@ -751,6 +753,7 @@ func TestLoggerJSON(t *testing.T) {
 				TLSClientSubject:          assertString("CN=foobar"),
 				TLSVersion:                assertString("1.3"),
 				TLSCipher:                 assertString("TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"),
+				TLSClientJA4:              assertString(testJA4),
 				"time":                    assertNotEmpty(),
 				StartLocal:                assertNotEmpty(),
 				StartUTC:                  assertNotEmpty(),
@@ -1364,6 +1367,7 @@ func doLoggingTLSOpt(t *testing.T, config *otypes.AccessLog, enableTLS, tracing,
 				Subject: pkix.Name{CommonName: "foobar"},
 			}},
 		}
+		req = req.WithContext(traefiktls.ContextWithJA4(req.Context(), testJA4))
 	}
 
 	if tracing {
