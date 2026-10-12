@@ -77,6 +77,8 @@ const (
 	TLSCipher = "TLSCipher"
 	// TLSClientSubject is the string representation of the TLS client certificate's Subject.
 	TLSClientSubject = "TLSClientSubject"
+	// TLSClientJA4 is the JA4 fingerprint of the TLS ClientHello sent by the client.
+	TLSClientJA4 = "TLSClientJA4"
 
 	// TraceID is the consistent identifier for tracking requests across services, including upstream ones managed by Traefik, shown as a 32-hex digit string.
 	TraceID = "TraceId"
@@ -126,6 +128,7 @@ func init() {
 	allCoreKeys[TLSVersion] = struct{}{}
 	allCoreKeys[TLSCipher] = struct{}{}
 	allCoreKeys[TLSClientSubject] = struct{}{}
+	allCoreKeys[TLSClientJA4] = struct{}{}
 }
 
 // CoreLogData holds the fields computed from the request/response.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"expvar"
 	"fmt"
@@ -33,6 +34,7 @@ import (
 	tcprouter "github.com/traefik/traefik/v3/pkg/server/router/tcp"
 	"github.com/traefik/traefik/v3/pkg/server/service"
 	"github.com/traefik/traefik/v3/pkg/tcp"
+	traefiktls "github.com/traefik/traefik/v3/pkg/tls"
 	"github.com/traefik/traefik/v3/pkg/types"
 )
 
@@ -723,6 +725,7 @@ func newHTTPServer(ctx context.Context, ln net.Listener, configuration *static.E
 	serverHTTP.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
 		// This adds an empty struct in order to store a RoundTripper in the ConnContext in case of Kerberos or NTLM.
 		ctx = service.AddTransportOnContext(ctx)
+		ctx = contextWithJA4(ctx, c)
 		if prevConnContext != nil {
 			return prevConnContext(ctx, c)
 		}
@@ -741,6 +744,21 @@ func newHTTPServer(ctx context.Context, ln net.Listener, configuration *static.E
 		Forwarder: listener,
 		Switcher:  httpSwitcher,
 	}, nil
+}
+
+// contextWithJA4 stores in ctx the JA4 fingerprint computed by the TCP router from the ClientHello of conn, if any.
+func contextWithJA4(ctx context.Context, conn net.Conn) context.Context {
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return ctx
+	}
+
+	routerConn, ok := tlsConn.NetConn().(*tcprouter.Conn)
+	if !ok || routerConn.JA4 == "" {
+		return ctx
+	}
+
+	return traefiktls.ContextWithJA4(ctx, routerConn.JA4)
 }
 
 func getConnKey(conn net.Conn) string {

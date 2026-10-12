@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	tcpmuxer "github.com/traefik/traefik/v3/pkg/muxer/tcp"
 	"github.com/traefik/traefik/v3/pkg/tcp"
+	traefiktls "github.com/traefik/traefik/v3/pkg/tls"
 )
 
 const defaultBufSize = 4096
@@ -167,7 +168,7 @@ func (r *Router) ServeTCP(conn tcp.WriteCloser) {
 
 	// Handling ACME-TLS/1 challenges.
 	if !r.acmeTLSPassthrough && slices.Contains(hello.protos, tlsalpn01.ACMETLS1Protocol) {
-		r.acmeTLSALPNHandler().ServeTCP(r.GetConn(conn, hello.peeked))
+		r.acmeTLSALPNHandler().ServeTCP(r.getHelloConn(conn, hello))
 		return
 	}
 
@@ -181,14 +182,14 @@ func (r *Router) ServeTCP(conn tcp.WriteCloser) {
 		// In order not to depart from the behavior in 2.6,
 		// we only allow an HTTPS router to take precedence over a TCP-TLS router if it is _not_ an HostSNI(*) router
 		// (so basically any router that has a specific HostSNI based rule).
-		handlerHTTPS.ServeTCP(r.GetConn(conn, hello.peeked))
+		handlerHTTPS.ServeTCP(r.getHelloConn(conn, hello))
 		return
 	}
 
 	// Contains also TCP TLS passthrough routes.
 	handlerTCPTLS, catchAllTCPTLS := r.muxerTCPTLS.Match(connData)
 	if handlerTCPTLS != nil && !catchAllTCPTLS {
-		handlerTCPTLS.ServeTCP(r.GetConn(conn, hello.peeked))
+		handlerTCPTLS.ServeTCP(r.getHelloConn(conn, hello))
 		return
 	}
 
@@ -196,19 +197,19 @@ func (r *Router) ServeTCP(conn tcp.WriteCloser) {
 	// We end up here for e.g. an HTTPS router that only has a PathPrefix rule,
 	// which under the scenes is counted as an HostSNI(*) rule.
 	if handlerHTTPS != nil {
-		handlerHTTPS.ServeTCP(r.GetConn(conn, hello.peeked))
+		handlerHTTPS.ServeTCP(r.getHelloConn(conn, hello))
 		return
 	}
 
 	// Fallback on TCP TLS catchAll.
 	if handlerTCPTLS != nil {
-		handlerTCPTLS.ServeTCP(r.GetConn(conn, hello.peeked))
+		handlerTCPTLS.ServeTCP(r.getHelloConn(conn, hello))
 		return
 	}
 
 	// To handle 404s for HTTPS.
 	if r.httpsForwarder != nil {
-		r.httpsForwarder.ServeTCP(r.GetConn(conn, hello.peeked))
+		r.httpsForwarder.ServeTCP(r.getHelloConn(conn, hello))
 		return
 	}
 
@@ -249,6 +250,16 @@ func (r *Router) GetConn(conn tcp.WriteCloser, peeked string) tcp.WriteCloser {
 	}
 
 	return conn
+}
+
+// getHelloConn creates a connection proxy with the bytes peeked from the TLS ClientHello,
+// and the ClientHello fingerprint.
+func (r *Router) getHelloConn(conn tcp.WriteCloser, hello *clientHello) tcp.WriteCloser {
+	return &Conn{
+		Peeked:      []byte(hello.peeked),
+		JA4:         hello.ja4,
+		WriteCloser: conn,
+	}
 }
 
 // GetHTTPHandler gets the attached http handler.
@@ -330,6 +341,9 @@ type Conn struct {
 	// It set to nil by Read when fully consumed.
 	Peeked []byte
 
+	// JA4 is the JA4 fingerprint of the TLS ClientHello peeked from Conn, if any.
+	JA4 string
+
 	// Conn is the underlying connection.
 	// It can be type asserted against *net.TCPConn or other types as needed.
 	// It should not be read from directly unless Peeked is nil.
@@ -354,6 +368,7 @@ type clientHello struct {
 	protos     []string // ALPN protocols list
 	isTLS      bool     // whether we are a TLS handshake
 	peeked     string   // the bytes peeked from the hello while getting the info
+	ja4        string   // JA4 fingerprint of the hello
 }
 
 // clientHelloInfo returns various data from the clientHello handshake,
@@ -413,10 +428,12 @@ func clientHelloInfo(br *bufio.Reader) (*clientHello, error) {
 
 	sni := ""
 	var protos []string
+	var ja4 string
 	server := tls.Server(helloSniffConn{r: bytes.NewReader(helloBytes)}, &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			sni = hello.ServerName
 			protos = hello.SupportedProtos
+			ja4 = traefiktls.JA4(hello)
 			return nil, nil
 		},
 	})
@@ -427,6 +444,7 @@ func clientHelloInfo(br *bufio.Reader) (*clientHello, error) {
 		isTLS:      true,
 		peeked:     getPeeked(br),
 		protos:     protos,
+		ja4:        ja4,
 	}, nil
 }
 
