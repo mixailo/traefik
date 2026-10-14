@@ -45,6 +45,9 @@ const (
 	debugConnectionEnv string = "DEBUG_CONNECTION"
 )
 
+// JA4Header is the request header carrying the JA4 fingerprint of the TLS ClientHello sent by the client.
+const JA4Header = "X-Ja4"
+
 var (
 	clientConnectionStates   = map[string]*connState{}
 	clientConnectionStatesMu = sync.RWMutex{}
@@ -647,6 +650,10 @@ func newHTTPServer(ctx context.Context, ln net.Listener, configuration *static.E
 		return nil, err
 	}
 
+	// The JA4 header is set after the forwarded headers handler, which removes the headers listed in Connection,
+	// so that the client cannot have it removed before the routing.
+	next = ja4Header(next)
+
 	var handler http.Handler
 	handler, err = forwardedheaders.NewXForwarded(
 		configuration.ForwardedHeaders.Insecure,
@@ -759,6 +766,20 @@ func contextWithJA4(ctx context.Context, conn net.Conn) context.Context {
 	}
 
 	return traefiktls.ContextWithJA4(ctx, routerConn.JA4)
+}
+
+// ja4Header sets the JA4Header request header to the JA4 fingerprint of the connection's ClientHello,
+// so that router rules, middlewares and backends can use it.
+// The value sent by the client, if any, is always removed: it cannot be trusted.
+func ja4Header(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		req.Header.Del(JA4Header)
+		if ja4 := traefiktls.JA4FromContext(req.Context()); ja4 != "" {
+			req.Header.Set(JA4Header, ja4)
+		}
+
+		h.ServeHTTP(rw, req)
+	})
 }
 
 func getConnKey(conn net.Conn) string {

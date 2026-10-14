@@ -740,6 +740,7 @@ func TestJA4OnRequestContext(t *testing.T) {
 
 			router.SetHTTPSHandler(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 				rw.Header().Set("X-Proto", req.Proto)
+				rw.Header().Set("X-Request-JA4", strings.Join(req.Header.Values(JA4Header), ","))
 				_, _ = rw.Write([]byte(traefiktls.JA4FromContext(req.Context())))
 			}), tlsConfig)
 
@@ -760,7 +761,16 @@ func TestJA4OnRequestContext(t *testing.T) {
 				},
 			}
 
-			resp, err := client.Get("https://" + entryPoint.listener.Addr().String())
+			req, err := http.NewRequest(http.MethodGet, "https://"+entryPoint.listener.Addr().String(), http.NoBody)
+			require.NoError(t, err)
+			// A spoofed fingerprint must be replaced by the computed one.
+			req.Header.Set(JA4Header, "t13d131000_f57a46bbacb6_e7c285222651")
+			if !test.http2 {
+				// Listing the header in Connection must not remove the computed one.
+				req.Header.Set("Connection", JA4Header)
+			}
+
+			resp, err := client.Do(req)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = resp.Body.Close() })
 
@@ -770,6 +780,7 @@ func TestJA4OnRequestContext(t *testing.T) {
 			assert.Equal(t, test.expectedProto, resp.Header.Get("X-Proto"))
 			assert.Regexp(t, `^t13d\d{4}`+test.expectedALPN+`_[0-9a-f]{12}_[0-9a-f]{12}$`, string(body))
 			assert.Equal(t, <-handshakeJA4, string(body))
+			assert.Equal(t, string(body), resp.Header.Get("X-Request-JA4"))
 		})
 	}
 }
@@ -819,6 +830,59 @@ func TestContextWithJA4(t *testing.T) {
 			ctx := contextWithJA4(t.Context(), test.conn(conn))
 
 			assert.Equal(t, test.expected, traefiktls.JA4FromContext(ctx))
+		})
+	}
+}
+
+func TestJA4Header(t *testing.T) {
+	const ja4 = "t13d1516h2_8daaf6152771_e5627efa2ab1"
+
+	testCases := []struct {
+		desc          string
+		contextJA4    string
+		requestValues []string
+		expected      []string
+	}{
+		{
+			desc: "no fingerprint",
+		},
+		{
+			desc:          "no fingerprint, header sent by the client",
+			requestValues: []string{ja4},
+		},
+		{
+			desc:       "fingerprint",
+			contextJA4: ja4,
+			expected:   []string{ja4},
+		},
+		{
+			desc:          "fingerprint, header sent by the client",
+			contextJA4:    ja4,
+			requestValues: []string{"t13d131000_f57a46bbacb6_e7c285222651", "foo"},
+			expected:      []string{ja4},
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.desc, func(t *testing.T) {
+			t.Parallel()
+
+			var values []string
+			handler := ja4Header(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+				values = req.Header.Values(JA4Header)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "https://foo", http.NoBody)
+			for _, value := range test.requestValues {
+				req.Header.Add(JA4Header, value)
+			}
+			if test.contextJA4 != "" {
+				req = req.WithContext(traefiktls.ContextWithJA4(req.Context(), test.contextJA4))
+			}
+
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			assert.Equal(t, test.expected, values)
 		})
 	}
 }
