@@ -2,7 +2,13 @@
 # Только на ветках emperor/*: upstream-воркфлоу этого форка не трогаем.
 #
 # При переносе патча на новый тег traefik: ветка emperor/<тег>-ja4 и
-# TRAEFIK_VERSION ниже. Тег образа — ghcr.io/mixailo/traefik:<тег>-ja4.
+# TRAEFIK_VERSION ниже. Тег образа — ghcr.io/mixailo/traefik:IMAGE_TAG.
+#
+# IMAGE_TAG поднимать на КАЖДУЮ правку патча (<тег>-ja4.N): тег, на котором
+# стоит прод, не должен перезаписываться — иначе пересоздание контейнера
+# молча подменит бинарь, а откат на прошлый тег станет невозможен.
+# История: v3.6.6-ja4 — JA4 в access-логе (emperor-njff); v3.6.6-ja4.2 —
+# плюс заголовок X-Ja4 для правил роутеров (emperor-51tf).
 name: emperor-image
 on:
   push:
@@ -15,6 +21,7 @@ permissions:
 
 env:
   TRAEFIK_VERSION: v3.6.6
+  IMAGE_TAG: v3.6.6-ja4.2
 
 jobs:
   test:
@@ -41,11 +48,13 @@ jobs:
         with:
           context: .
           file: emperor/Dockerfile
-          build-args: TRAEFIK_VERSION=${{ env.TRAEFIK_VERSION }}
+          build-args: |
+            TRAEFIK_VERSION=${{ env.TRAEFIK_VERSION }}
+            IMAGE_TAG=${{ env.IMAGE_TAG }}
           push: true
           tags: |
-            ghcr.io/mixailo/traefik:${{ env.TRAEFIK_VERSION }}-ja4
-            ghcr.io/mixailo/traefik:${{ env.TRAEFIK_VERSION }}-ja4-${{ github.sha }}
+            ghcr.io/mixailo/traefik:${{ env.IMAGE_TAG }}
+            ghcr.io/mixailo/traefik:${{ env.IMAGE_TAG }}-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/mixailo/traefik
-            org.opencontainers.image.version=${{ env.TRAEFIK_VERSION }}-ja4
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
