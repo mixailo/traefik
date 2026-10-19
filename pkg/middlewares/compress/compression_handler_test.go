@@ -1043,7 +1043,7 @@ func mustNewCompressionHandler(t *testing.T, cfg Config, algo string, next http.
 		assert.Failf(t, "unknown compression algorithm: %s", algo)
 	}
 
-	w, err := NewCompressionHandler(cfg, writer, next)
+	w, err := NewCompressionHandler(cfg, NewWriterPool(writer), next)
 	require.NoError(t, err)
 
 	return w

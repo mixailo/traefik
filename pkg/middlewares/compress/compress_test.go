@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/gzhttp"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/traefik/traefik/v3/pkg/config/dynamic"
@@ -582,6 +583,102 @@ func TestIntegrationShouldCompress(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWriterPoolsSharedAcrossInstances(t *testing.T) {
+	next := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {})
+	conf := dynamic.Compress{Encodings: defaultSupportedEncodings}
+
+	first, err := New(t.Context(), next, conf, "first")
+	require.NoError(t, err)
+	second, err := New(t.Context(), next, conf, "second")
+	require.NoError(t, err)
+
+	writers := func(h http.Handler) *WriterPool {
+		t.Helper()
+
+		ch, ok := h.(*CompressionHandler)
+		require.True(t, ok)
+		return ch.writers
+	}
+
+	firstCompress, ok := first.(*compress)
+	require.True(t, ok)
+	secondCompress, ok := second.(*compress)
+	require.True(t, ok)
+
+	assert.Same(t, writers(firstCompress.brotliHandler), writers(secondCompress.brotliHandler))
+	assert.Same(t, writers(firstCompress.zstdHandler), writers(secondCompress.zstdHandler))
+	assert.NotSame(t, writers(firstCompress.brotliHandler), writers(firstCompress.zstdHandler))
+}
+
+func TestEncoderWindowSize(t *testing.T) {
+	fakeBody := generateBytes(2 << 20)
+
+	testCases := []struct {
+		desc       string
+		encoding   string
+		windowSize func(t *testing.T, body []byte) int
+	}{
+		{
+			desc:     "brotli",
+			encoding: brotliName,
+			windowSize: func(t *testing.T, body []byte) int {
+				t.Helper()
+
+				require.NotEmpty(t, body)
+				return 1 << brotliWindowLog(body[0])
+			},
+		},
+		{
+			desc:     "zstd",
+			encoding: zstdName,
+			windowSize: func(t *testing.T, body []byte) int {
+				t.Helper()
+
+				var header zstd.Header
+				require.NoError(t, header.Decode(body))
+				return int(header.WindowSize)
+			},
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.desc, func(t *testing.T) {
+			t.Parallel()
+
+			next := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				_, err := rw.Write(fakeBody)
+				require.NoError(t, err)
+			})
+
+			handler, err := New(t.Context(), next, dynamic.Compress{Encodings: defaultSupportedEncodings}, "testing")
+			require.NoError(t, err)
+
+			req := testhelpers.MustNewRequest(http.MethodGet, "http://localhost", nil)
+			req.Header.Set(acceptEncodingHeader, test.encoding)
+
+			rw := httptest.NewRecorder()
+			handler.ServeHTTP(rw, req)
+
+			assert.Equal(t, test.encoding, rw.Header().Get(contentEncodingHeader))
+			assert.Equal(t, 1<<encoderWindowLog, test.windowSize(t, rw.Body.Bytes()))
+		})
+	}
+}
+
+// brotliWindowLog decodes the WBITS field at the start of a brotli stream (RFC 7932, section 9.1).
+func brotliWindowLog(first byte) int {
+	if first&1 == 0 {
+		return 16
+	}
+	if n := (first >> 1) & 7; n != 0 {
+		return 17 + int(n)
+	}
+	if n := (first >> 4) & 7; n != 0 {
+		return 8 + int(n)
+	}
+	return 17
 }
 
 func TestMinResponseBodyBytes(t *testing.T) {
