@@ -1,14 +1,18 @@
 package compress
 
 import (
+	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
 	"net/textproto"
+	"sync"
 	"testing"
 
+	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/gzhttp"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
@@ -610,6 +614,73 @@ func TestWriterPoolsSharedAcrossInstances(t *testing.T) {
 	assert.Same(t, writers(firstCompress.brotliHandler), writers(secondCompress.brotliHandler))
 	assert.Same(t, writers(firstCompress.zstdHandler), writers(secondCompress.zstdHandler))
 	assert.NotSame(t, writers(firstCompress.brotliHandler), writers(firstCompress.zstdHandler))
+}
+
+func TestSharedWriterPoolsConcurrentResponses(t *testing.T) {
+	bodies := [][]byte{
+		generateBytes(100000),
+		bytes.Repeat([]byte("traefik shared writer pool "), 5000),
+	}
+
+	var handlers []http.Handler
+	for i, body := range bodies {
+		next := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			_, err := rw.Write(body)
+			require.NoError(t, err)
+		})
+
+		handler, err := New(t.Context(), next, dynamic.Compress{Encodings: defaultSupportedEncodings}, fmt.Sprintf("testing-%d", i))
+		require.NoError(t, err)
+
+		handlers = append(handlers, handler)
+	}
+
+	decoders := map[string]func(t *testing.T, body []byte) []byte{
+		brotliName: func(t *testing.T, body []byte) []byte {
+			t.Helper()
+
+			got, err := io.ReadAll(brotli.NewReader(bytes.NewReader(body)))
+			require.NoError(t, err)
+			return got
+		},
+		zstdName: func(t *testing.T, body []byte) []byte {
+			t.Helper()
+
+			decoder, err := zstd.NewReader(nil)
+			require.NoError(t, err)
+			defer decoder.Close()
+
+			got, err := decoder.DecodeAll(body, nil)
+			require.NoError(t, err)
+			return got
+		},
+	}
+
+	var wg sync.WaitGroup
+	for i := range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for j := range 20 {
+				index := (i + j) % len(handlers)
+				encoding := brotliName
+				if j%2 == 0 {
+					encoding = zstdName
+				}
+
+				req := testhelpers.MustNewRequest(http.MethodGet, "http://localhost", nil)
+				req.Header.Set(acceptEncodingHeader, encoding)
+
+				rw := httptest.NewRecorder()
+				handlers[index].ServeHTTP(rw, req)
+
+				assert.Equal(t, encoding, rw.Header().Get(contentEncodingHeader))
+				assert.Equal(t, bodies[index], decoders[encoding](t, rw.Body.Bytes()))
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestEncoderWindowSize(t *testing.T) {
