@@ -23,6 +23,18 @@ const defaultMinSize = 1024
 
 var defaultSupportedEncodings = []string{gzipName, brotliName, zstdName}
 
+// encoderWindowLog is the base 2 logarithm of the brotli and zstd window size (1 MiB).
+// The library defaults (4 MiB for brotli, 8 MiB for zstd) only pay off for responses larger than 1 MiB,
+// but they make every idle pooled encoder hold several megabytes.
+const encoderWindowLog = 20
+
+// The writer pools are shared by all the middleware instances, as one instance is created per router:
+// with per-instance pools, the memory held by idle brotli and zstd encoders grows with the number of routers.
+var (
+	brotliWriters = NewWriterPool(newBrotliWriter)
+	zstdWriters   = NewWriterPool(newZstdWriter)
+)
+
 // Compress is a middleware that allows to compress the response.
 type compress struct {
 	next            http.Handler
@@ -215,10 +227,7 @@ func (c *compress) newBrotliHandler(middlewareName string) (http.Handler, error)
 		cfg.ExcludedContentTypes = c.excludes
 	}
 
-	newBrotliWriter := func(rw http.ResponseWriter) (CompressionWriter, string, error) {
-		return brotli.NewWriter(rw), brotliName, nil
-	}
-	return NewCompressionHandler(cfg, newBrotliWriter, c.next)
+	return NewCompressionHandler(cfg, brotliWriters, c.next)
 }
 
 func (c *compress) newZstdHandler(middlewareName string) (http.Handler, error) {
@@ -229,12 +238,21 @@ func (c *compress) newZstdHandler(middlewareName string) (http.Handler, error) {
 		cfg.ExcludedContentTypes = c.excludes
 	}
 
-	newZstdWriter := func(rw http.ResponseWriter) (CompressionWriter, string, error) {
-		writer, err := zstd.NewWriter(rw)
-		if err != nil {
-			return nil, "", fmt.Errorf("creating zstd writer: %w", err)
-		}
-		return writer, zstdName, nil
+	return NewCompressionHandler(cfg, zstdWriters, c.next)
+}
+
+func newBrotliWriter(rw http.ResponseWriter) (CompressionWriter, string, error) {
+	return brotli.NewWriterOptions(rw, brotli.WriterOptions{
+		Quality: brotli.DefaultCompression,
+		LGWin:   encoderWindowLog,
+	}), brotliName, nil
+}
+
+func newZstdWriter(rw http.ResponseWriter) (CompressionWriter, string, error) {
+	// A response is encoded by the goroutine serving it, so a concurrency above 1 only adds encoder state.
+	writer, err := zstd.NewWriter(rw, zstd.WithWindowSize(1<<encoderWindowLog), zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		return nil, "", fmt.Errorf("creating zstd writer: %w", err)
 	}
-	return NewCompressionHandler(cfg, newZstdWriter, c.next)
+	return writer, zstdName, nil
 }
