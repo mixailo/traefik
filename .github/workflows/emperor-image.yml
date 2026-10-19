@@ -8,7 +8,8 @@
 # стоит прод, не должен перезаписываться — иначе пересоздание контейнера
 # молча подменит бинарь, а откат на прошлый тег станет невозможен.
 # История: v3.6.6-ja4 — JA4 в access-логе (emperor-njff); v3.6.6-ja4.2 —
-# плюс заголовок X-Ja4 для правил роутеров (emperor-51tf).
+# плюс заголовок X-Ja4 для правил роутеров (emperor-51tf); v3.6.6-ja4.3 —
+# плюс общий пул энкодеров compress и окно br/zstd 1 МиБ (emperor-g4e4).
 name: emperor-image
 on:
   push:
@@ -21,7 +22,7 @@ permissions:
 
 env:
   TRAEFIK_VERSION: v3.6.6
-  IMAGE_TAG: v3.6.6-ja4.2
+  IMAGE_TAG: v3.6.6-ja4.3
 
 jobs:
   test:
@@ -31,8 +32,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-      # Пакеты, которые трогает патч JA4.
-      - run: go test ./pkg/tls/ ./pkg/server/ ./pkg/server/router/tcp/ ./pkg/middlewares/accesslog/
+      # Пакеты, которые трогают наши патчи (JA4, пулы compress).
+      - run: go test ./pkg/tls/ ./pkg/server/ ./pkg/server/router/tcp/ ./pkg/middlewares/accesslog/ ./pkg/middlewares/compress/
 
   build-push:
     needs: test
