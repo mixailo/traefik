@@ -67,12 +67,27 @@ type CompressionHandler struct {
 	includedContentTypes []parsedContentType
 	next                 http.Handler
 
-	writerPool sync.Pool
-	newWriter  NewCompressionWriter
+	writers *WriterPool
+}
+
+// WriterPool holds idle compression writers of one algorithm for reuse.
+// A reset writer is not tied to a handler, so one pool can serve every handler of that algorithm.
+type WriterPool struct {
+	pool      sync.Pool
+	newWriter NewCompressionWriter
+}
+
+// NewWriterPool returns a pool that creates its writers with newWriter.
+func NewWriterPool(newWriter NewCompressionWriter) *WriterPool {
+	return &WriterPool{newWriter: newWriter}
 }
 
 // NewCompressionHandler returns a new compressing handler.
-func NewCompressionHandler(cfg Config, newWriter NewCompressionWriter, next http.Handler) (http.Handler, error) {
+func NewCompressionHandler(cfg Config, writers *WriterPool, next http.Handler) (http.Handler, error) {
+	if writers == nil {
+		return nil, errors.New("writer pool is required")
+	}
+
 	if cfg.MinSize < 0 {
 		return nil, errors.New("minimum size must be greater than or equal to zero")
 	}
@@ -106,7 +121,7 @@ func NewCompressionHandler(cfg Config, newWriter NewCompressionWriter, next http
 		excludedContentTypes: excludedContentTypes,
 		includedContentTypes: includedContentTypes,
 		next:                 next,
-		newWriter:            newWriter,
+		writers:              writers,
 	}, nil
 }
 
@@ -137,12 +152,12 @@ func (c *CompressionHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) 
 }
 
 func (c *CompressionHandler) getCompressionWriter(rw http.ResponseWriter) (*compressionWriterWrapper, error) {
-	if writer, ok := c.writerPool.Get().(*compressionWriterWrapper); ok {
+	if writer, ok := c.writers.pool.Get().(*compressionWriterWrapper); ok {
 		writer.Reset(rw)
 		return writer, nil
 	}
 
-	writer, algo, err := c.newWriter(rw)
+	writer, algo, err := c.writers.newWriter(rw)
 	if err != nil {
 		return nil, fmt.Errorf("creating compression writer: %w", err)
 	}
@@ -151,7 +166,7 @@ func (c *CompressionHandler) getCompressionWriter(rw http.ResponseWriter) (*comp
 
 func (c *CompressionHandler) putCompressionWriter(writer *compressionWriterWrapper) {
 	writer.Reset(nil)
-	c.writerPool.Put(writer)
+	c.writers.pool.Put(writer)
 }
 
 type compressionWriterWrapper struct {

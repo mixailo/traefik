@@ -1043,26 +1043,25 @@ func Test_FlushIncludedContentTypes(t *testing.T) {
 	}
 }
 
+func TestNewCompressionHandler_noWriterPool(t *testing.T) {
+	_, err := NewCompressionHandler(Config{}, nil, http.NotFoundHandler())
+	assert.Error(t, err)
+}
+
 func mustNewCompressionHandler(t *testing.T, cfg Config, algo string, next http.Handler) http.Handler {
 	t.Helper()
 
 	var writer NewCompressionWriter
 	switch algo {
 	case zstdName:
-		writer = func(rw http.ResponseWriter) (CompressionWriter, string, error) {
-			writer, err := zstd.NewWriter(rw)
-			require.NoError(t, err)
-			return writer, zstdName, nil
-		}
+		writer = newZstdWriter
 	case brotliName:
-		writer = func(rw http.ResponseWriter) (CompressionWriter, string, error) {
-			return brotli.NewWriter(rw), brotliName, nil
-		}
+		writer = newBrotliWriter
 	default:
 		assert.Failf(t, "unknown compression algorithm: %s", algo)
 	}
 
-	w, err := NewCompressionHandler(cfg, writer, next)
+	w, err := NewCompressionHandler(cfg, NewWriterPool(writer), next)
 	require.NoError(t, err)
 
 	return w
