@@ -30,6 +30,8 @@ const encoderWindowLog = 20
 
 // The writer pools are shared by all the middleware instances, as one instance is created per router:
 // with per-instance pools, the memory held by idle brotli and zstd encoders grows with the number of routers.
+// Sharing relies on every instance using the same encoder options:
+// a configurable compression level would need one pool per set of options.
 var (
 	brotliWriters = NewWriterPool(newBrotliWriter)
 	zstdWriters   = NewWriterPool(newZstdWriter)

@@ -84,6 +84,10 @@ func NewWriterPool(newWriter NewCompressionWriter) *WriterPool {
 
 // NewCompressionHandler returns a new compressing handler.
 func NewCompressionHandler(cfg Config, writers *WriterPool, next http.Handler) (http.Handler, error) {
+	if writers == nil {
+		return nil, errors.New("writer pool is required")
+	}
+
 	if cfg.MinSize < 0 {
 		return nil, errors.New("minimum size must be greater than or equal to zero")
 	}
