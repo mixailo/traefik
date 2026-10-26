@@ -9,7 +9,8 @@
 # молча подменит бинарь, а откат на прошлый тег станет невозможен.
 # История: v3.6.6-ja4 — JA4 в access-логе (emperor-njff); v3.6.6-ja4.2 —
 # плюс заголовок X-Ja4 для правил роутеров (emperor-51tf); v3.6.6-ja4.3 —
-# плюс общий пул энкодеров compress и окно br/zstd 1 МиБ (emperor-g4e4).
+# плюс общий пул энкодеров compress и окно br/zstd 1 МиБ (emperor-g4e4);
+# v3.7.16-ja4 — те же патчи на v3.7.16 (ветка emperor/v3.7.16-ja4).
 name: emperor-image
 on:
   push:
@@ -21,8 +22,8 @@ permissions:
   packages: write
 
 env:
-  TRAEFIK_VERSION: v3.6.6
-  IMAGE_TAG: v3.6.6-ja4.3
+  TRAEFIK_VERSION: v3.7.16
+  IMAGE_TAG: v3.7.16-ja4
 
 jobs:
   test:
@@ -31,7 +32,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
       # Пакеты, которые трогают наши патчи (JA4, пулы compress).
       - run: go test ./pkg/tls/ ./pkg/server/ ./pkg/server/router/tcp/ ./pkg/middlewares/accesslog/ ./pkg/middlewares/compress/
 
